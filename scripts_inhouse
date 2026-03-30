@@ -1,0 +1,1017 @@
+# Figure
+
+import os
+import sys
+import argparse
+import numpy as np
+import pandas as pd
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+import matplotlib.lines as mlines
+from matplotlib.gridspec import GridSpec, GridSpecFromSubplotSpec
+
+try:
+    import ternary
+    HAS_TERNARY = True
+except ImportError:
+    HAS_TERNARY = False
+
+SAMPLE_COLORS = {
+    "NS": "#4472C4",
+    "AS": "#ED7D31",
+    "AT": "#70AD47",
+    "TS": "#7030A0",
+    "TT": "#FF0000",
+}
+
+GROUP_MARKERS = {
+    "ATH": "o",
+    "AH": "s",
+    "TH": "^",
+    "Control": "D",
+}
+
+TAXA_COLORS = {
+    "g__Streptococcus":   "#E64B35",
+    "g__Staphylococcus":  "#4DBBD5",
+    "g__Corynebacterium": "#00A087",
+    "g__Moraxella":       "#3C5488",
+    "g__Fusobacterium":   "#F39B7F",
+    "g__Neisseria":       "#8491B4",
+    "g__Prevotella":      "#91D1C2",
+    "g__Pseudomonas":     "#DC0000",
+    "g__Ralstonia":       "#7E6148",
+    "g__Porphyromonas":   "#B09C85",
+    "Others":             "#CCCCCC",
+}
+
+
+def read_pcoa(path):
+    meta = {}
+    with open(path) as f:
+        first = f.readline().strip()
+    if first.startswith("#"):
+        for item in first.lstrip("#").split(","):
+            if "=" in item:
+                k, v = item.split("=", 1)
+                meta[k.strip()] = float(v.strip())
+    df = pd.read_csv(path, comment="#")
+    return df, meta
+
+
+def read_abundance(abund_path, meta_path):
+    abund = pd.read_csv(abund_path, index_col=0)
+    meta = pd.read_csv(meta_path)
+    abund.index = abund.index.astype(str)
+    meta["SampleID"] = meta["SampleID"].astype(str)
+    return meta.merge(abund, left_on="SampleID", right_index=True, how="inner")
+
+
+def read_ternary(path):
+    df = pd.read_csv(path)
+    rename = {}
+    for c in df.columns:
+        lc = c.lower().replace("g__", "")
+        if "streptococcus" in lc:
+            rename[c] = "Streptococcus"
+        elif "staphylococcus" in lc:
+            rename[c] = "Staphylococcus"
+        elif "ralstonia" in lc:
+            rename[c] = "Ralstonia"
+    df = df.rename(columns=rename)
+    arr = df[["Streptococcus", "Staphylococcus", "Ralstonia"]].values.astype(float)
+    row_sums = arr.sum(axis=1, keepdims=True)
+    return np.where(row_sums > 0, arr / row_sums, arr)
+
+
+def panel_A(ax):
+    ax.set_xlim(0, 10)
+    ax.set_ylim(0, 4.5)
+    ax.axis("off")
+
+    groups = [
+        ("Adenoid Tonsil Hypertrophy\n(ATH) N = 119", 1.5, 3.7, "#D6E4F0"),
+        ("Adenoid Hypertrophy\n(AH) N = 101",         1.5, 2.7, "#D6F0D6"),
+        ("Tonsil Hypertrophy\n(TH) N = 11",           1.5, 1.7, "#FFF3CD"),
+        ("Healthy Control\n(Control) N = 45",         1.5, 0.7, "#F8D7DA"),
+    ]
+    for txt, x, y, fc in groups:
+        ax.add_patch(mpatches.FancyBboxPatch(
+            (x - 1.4, y - 0.38), 2.8, 0.76,
+            boxstyle="round,pad=0.06", fc=fc, ec="#888", lw=0.9))
+        ax.text(x, y + 0.02, txt, ha="center", va="center",
+                fontsize=8, fontweight="bold")
+
+    sample_types = [
+        ("Nasopharyngeal Swab (NS)", "#4472C4"),
+        ("Adenoid Swab (AS)",        "#ED7D31"),
+        ("Adenoid Tissue (AT)",      "#70AD47"),
+        ("Tonsil Swab (TS)",         "#7030A0"),
+        ("Tonsil Tissue (TT)",       "#FF0000"),
+    ]
+    for i, (lbl, clr) in enumerate(sample_types):
+        ax.add_patch(mpatches.Circle((3.4, 3.8 - i * 0.70), 0.11, fc=clr, ec="none"))
+        ax.text(3.6, 3.8 - i * 0.70, lbl, va="center", fontsize=8)
+
+    aw = dict(arrowstyle="->", color="#333", lw=1.3)
+    ax.annotate("", xy=(5.8, 2.2), xytext=(5.0, 2.2), arrowprops=aw)
+    ax.annotate("", xy=(7.6, 2.2), xytext=(6.8, 2.2), arrowprops=aw)
+
+    for x, lbl in [(5.4, "16s rRNA\nSequencing"),
+                   (7.2, "Amplification"),
+                   (9.0, "Taxonomic Profiling\nand Differential\nanalysis")]:
+        ax.text(x, 2.5, lbl, ha="center", va="center", fontsize=8,
+                bbox=dict(boxstyle="round,pad=0.35", fc="#EBF5FB", ec="#5DADE2"))
+
+    ax.text(0.0, 1.02, "(A)", transform=ax.transAxes,
+            fontsize=11, fontweight="bold", va="bottom")
+
+
+def draw_pcoa(ax, df, meta, panel_label, st_list, prefix="", show_groups=True):
+    for grp, marker in GROUP_MARKERS.items():
+        sub = df[df["Group"] == grp] if "Group" in df.columns else df
+        for st, color in SAMPLE_COLORS.items():
+            pts = sub[sub["SampleType"] == st]
+            if pts.empty:
+                continue
+            ax.scatter(pts["PC1"], pts["PC2"],
+                       c=color, marker=marker, s=15,
+                       alpha=0.65, linewidths=0, zorder=3)
+
+    ax.axhline(0, color="grey", lw=0.4, ls="--")
+    ax.axvline(0, color="grey", lw=0.4, ls="--")
+    ax.set_xlabel(f"PCoA1 ( {meta.get('PC1_pct', 0):.2f}% )", fontsize=8)
+    ax.set_ylabel(f"PCoA2 ( {meta.get('PC2_pct', 0):.2f}% )", fontsize=8)
+    ax.tick_params(labelsize=7)
+    for sp in ["top", "right"]:
+        ax.spines[sp].set_visible(False)
+
+    r2   = meta.get("R2",   0)
+    pval = meta.get("pval", 0.001)
+    ax.text(0.98, 0.98,
+            f"PERMANOVA:\nR² = {r2:.4f}\np-value = {pval:.3f}",
+            transform=ax.transAxes, ha="right", va="top", fontsize=7,
+            bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="grey", alpha=0.85))
+
+    st_handles = [mpatches.Patch(color=SAMPLE_COLORS[s],
+                                  label=f"{prefix}{s}" if prefix else s)
+                  for s in st_list if s in SAMPLE_COLORS]
+    if show_groups:
+        grp_handles = [
+            mlines.Line2D([], [], color="grey", marker=GROUP_MARKERS[g],
+                          linestyle="None", markersize=6, label=g)
+            for g in GROUP_MARKERS
+        ]
+        ax.legend(handles=st_handles + grp_handles,
+                  fontsize=6, ncol=2, loc="lower left", framealpha=0.7)
+    else:
+        ax.legend(handles=st_handles, fontsize=6.5,
+                  loc="lower left", framealpha=0.7)
+
+    ax.set_title(panel_label, loc="left", fontsize=11, fontweight="bold")
+
+
+def panel_C(ax, df):
+    groups_order  = ["Control", "ATH", "AH", "TH"]
+    samples_map   = {
+        "Control": ["NS", "AS", "TS"],
+        "ATH":     ["NS", "AS", "TS", "AT", "TT"],
+        "AH":      ["NS", "AS", "TS", "AT", "TT"],
+        "TH":      ["NS", "AS", "TS", "AT", "TT"],
+    }
+    taxa_order = list(TAXA_COLORS.keys())
+    genus_cols = [c for c in df.columns if c.startswith("g__")]
+
+    means = {}
+    for grp in groups_order:
+        for st in samples_map[grp]:
+            sub = df[(df["Group"] == grp) & (df["SampleType"] == st)]
+            if sub.empty:
+                continue
+            v = sub[genus_cols].mean()
+            total = v.sum()
+            if total > 0:
+                v = v / total * 100
+            means[(grp, st)] = v
+
+    x_pos, centers, x = [], {}, 0
+    for grp in groups_order:
+        samps = [s for s in samples_map[grp] if (grp, s) in means]
+        if not samps:
+            continue
+        x0 = x
+        for st in samps:
+            x_pos.append((grp, st, x))
+            x += 1
+        centers[grp] = (x0 + x - 1) / 2
+        x += 0.4
+
+    bottoms = np.zeros(len(x_pos))
+    xvals = [p for _, _, p in x_pos]
+
+    for taxon in taxa_order:
+        if taxon == "Others":
+            continue
+        heights = [means[(g, s)].get(taxon, 0) for g, s, _ in x_pos]
+        ax.bar(xvals, heights, bottom=bottoms, width=0.72,
+               color=TAXA_COLORS[taxon], edgecolor="none")
+        bottoms += np.array(heights)
+
+    other_h = np.zeros(len(x_pos))
+    for i, (grp, st, _) in enumerate(x_pos):
+        for c in genus_cols:
+            if c not in TAXA_COLORS:
+                other_h[i] += means[(grp, st)].get(c, 0)
+    if other_h.sum() > 0:
+        ax.bar(xvals, other_h, bottom=bottoms, width=0.72,
+               color=TAXA_COLORS["Others"], edgecolor="none")
+
+    for grp, cx in centers.items():
+        ax.text(cx, 106, grp, ha="center", fontsize=8, fontweight="bold")
+
+    ax.set_xticks(xvals)
+    ax.set_xticklabels([st for _, st, _ in x_pos], rotation=90, fontsize=6.5)
+    ax.set_ylim(0, 116)
+    ax.set_ylabel("Relative Abundance(%)", fontsize=9)
+    for sp in ["top", "right"]:
+        ax.spines[sp].set_visible(False)
+    ax.tick_params(axis="y", labelsize=7)
+
+    handles = [mpatches.Patch(color=c, label=t.replace("g__", ""))
+               for t, c in TAXA_COLORS.items()]
+    ax.legend(handles=handles, fontsize=6.5, ncol=2,
+              bbox_to_anchor=(1.01, 1), loc="upper left",
+              framealpha=0.7, title="Genus", title_fontsize=7)
+    ax.set_title("(C)", loc="left", fontsize=11, fontweight="bold")
+
+
+def panel_F(fig, spec, arrays):
+    configs = [
+        ("ATH – NS", "NS"),
+        ("ATH – AS", "AS"),
+        ("AH – NS",  "NS"),
+        ("AH – AS",  "AS"),
+    ]
+    if not HAS_TERNARY:
+        ax = fig.add_subplot(spec)
+        ax.axis("off")
+        ax.text(0.5, 0.5, "pip install python-ternary",
+                ha="center", va="center", color="grey")
+        return
+
+    gs = GridSpecFromSubplotSpec(1, 4, subplot_spec=spec, wspace=0.45)
+    for i, (arr, (title, st)) in enumerate(zip(arrays, configs)):
+        ax_h = fig.add_subplot(gs[i])
+        ax_h.axis("off")
+        _, tax = ternary.figure(scale=1.0, ax=ax_h)
+        tax.boundary(linewidth=1.2)
+        tax.gridlines(color="grey", multiple=0.2, linewidth=0.5, alpha=0.5)
+        pts = [(float(r[0]), float(r[1]), float(r[2])) for r in arr]
+        tax.scatter(pts, s=18, alpha=0.70, color=SAMPLE_COLORS[st], zorder=5)
+        tax.top_corner_label("Streptococcus",   fontsize=6.5, offset=0.16)
+        tax.left_corner_label("Ralstonia",       fontsize=6.5, offset=0.16)
+        tax.right_corner_label("Staphylococcus", fontsize=6.5, offset=0.16)
+        tax.set_title(title, fontsize=8.5, pad=14)
+        tax.ticks(axis="lbr", linewidth=1, multiple=0.25,
+                  tick_formats="%.2f", fontsize=4.5)
+        tax.get_axes().axis("off")
+
+    ax_label = fig.add_subplot(spec)
+    ax_label.axis("off")
+    ax_label.text(0.0, 1.02, "(F)", transform=ax_label.transAxes,
+                  fontsize=11, fontweight="bold")
+
+
+def main(data_dir="data", out_dir="."):
+    pcoa_all_df, pcoa_all_meta = read_pcoa(os.path.join(data_dir, "pcoa_all.csv"))
+    pcoa_ATH_df, pcoa_ATH_meta = read_pcoa(os.path.join(data_dir, "pcoa_ATH.csv"))
+    pcoa_AH_df,  pcoa_AH_meta  = read_pcoa(os.path.join(data_dir, "pcoa_AH.csv"))
+
+    abund_df = read_abundance(
+        os.path.join(data_dir, "genus_abundance.csv"),
+        os.path.join(data_dir, "metadata.csv"),
+    )
+
+    tern_arrays = [
+        read_ternary(os.path.join(data_dir, "ternary_ATH_NS.csv")),
+        read_ternary(os.path.join(data_dir, "ternary_ATH_AS.csv")),
+        read_ternary(os.path.join(data_dir, "ternary_AH_NS.csv")),
+        read_ternary(os.path.join(data_dir, "ternary_AH_AS.csv")),
+    ]
+
+    fig = plt.figure(figsize=(20, 26))
+    fig.patch.set_facecolor("white")
+    outer = GridSpec(4, 1, figure=fig,
+                     height_ratios=[1.35, 1.60, 1.40, 1.40],
+                     hspace=0.42)
+
+    panel_A(fig.add_subplot(outer[0]))
+
+    row1 = GridSpecFromSubplotSpec(1, 2, subplot_spec=outer[1],
+                                   width_ratios=[1, 1.65], wspace=0.36)
+    draw_pcoa(fig.add_subplot(row1[0]), pcoa_all_df, pcoa_all_meta,
+              "(B)", ["NS", "AS", "AT", "TS", "TT"], show_groups=True)
+    panel_C(fig.add_subplot(row1[1]), abund_df)
+
+    row2 = GridSpecFromSubplotSpec(1, 2, subplot_spec=outer[2], wspace=0.36)
+    draw_pcoa(fig.add_subplot(row2[0]), pcoa_ATH_df, pcoa_ATH_meta,
+              "(D)", ["NS", "AS", "TS", "AT"], prefix="ATH_", show_groups=False)
+    draw_pcoa(fig.add_subplot(row2[1]), pcoa_AH_df, pcoa_AH_meta,
+              "(E)", ["NS", "AS", "TS", "AT"], prefix="AH_", show_groups=False)
+
+    panel_F(fig, outer[3], tern_arrays)
+
+    os.makedirs(out_dir, exist_ok=True)
+    for ext in ("pdf", "png"):
+        fig.savefig(os.path.join(out_dir, f"Figure1.{ext}"),
+                    dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    print("done: Figure1.pdf / Figure1.png")
+
+
+if __name__ == "__main__":
+    p = argparse.ArgumentParser()
+    p.add_argument("--data_dir", default="data")
+    p.add_argument("--out_dir",  default=".")
+    args = p.parse_args()
+    main(args.data_dir, args.out_dir)
+
+# Figure
+
+import os
+import sys
+import argparse
+import numpy as np
+import pandas as pd
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+from matplotlib.gridspec import GridSpec
+from matplotlib.colors import LinearSegmentedColormap
+
+HEATMAP_CMAP = LinearSegmentedColormap.from_list(
+    "hm", ["#FFFFFF", "#FFF3CD", "#FDAE61", "#D73027", "#4A0011"], N=256)
+
+SHAP_CMAP = LinearSegmentedColormap.from_list(
+    "shap", ["#1F77B4", "#FFFFFF", "#D62728"], N=256)
+
+TYPE_COLORS  = {"AH_AS": "#ED7D31", "AH_AT": "#70AD47"}
+GRADE_COLORS = {0: "#FFFFFF", 1: "#FFF3CD", 2: "#FDDBC7", 3: "#D6604D", 4: "#A50026"}
+ROC_COLORS   = {"AS": "#ED7D31", "AT": "#70AD47", "NS": "#4472C4"}
+
+SPECIES_ORDER = [
+    "Haemophilus influenzae",
+    "Staphylococcus aureus",
+    "Streptococcus pneumoniae",
+    "Moraxella catarrhalis",
+    "Streptococcus agalactiae",
+    "Streptococcus pyogenes",
+]
+
+SHAP_ORDER = [
+    "g__Flavobacterium",
+    "g__Roseburia",
+    "g__Peptostreptococcus",
+    "g__Listeria",
+    "g__Paenibacillus",
+    "g__Clostridium_sensu_stricto_1",
+    "g__Catonella",
+    "g__Enterobacter",
+    "g__Massilia",
+    "g__Granulicatella",
+    "g__Akkermansia",
+    "g__Bifidobacterium",
+    "g__Ralstonia",
+    "g__Amaricoccus",
+    "g__Turicibacter",
+]
+
+
+def read_roc(path):
+    meta = {}
+    with open(path) as f:
+        first = f.readline().strip()
+    if first.startswith("#"):
+        for item in first.lstrip("#").split(","):
+            if "=" in item:
+                k, v = item.split("=", 1)
+                meta[k.strip()] = float(v.strip())
+    df = pd.read_csv(path, comment="#")
+    fpr = df["fpr"].values
+    tpr = df["tpr"].values
+    idx = np.argsort(fpr)
+    return fpr[idx], tpr[idx], meta
+
+
+def panel_A(ax):
+    ax.set_xlim(0, 10)
+    ax.set_ylim(0, 6)
+    ax.axis("off")
+
+    boxes = [
+        (1.0, 4.8, "Adenoids\nTissue",         "#D5E8D4", "#82B366"),
+        (1.0, 3.2, "Adenoids\nSwab",           "#DAE8FC", "#6C8EBF"),
+        (3.2, 4.0, "DNA\nExtraction",          "#FFF2CC", "#D6B656"),
+        (5.6, 5.0, "Metagenomic\nsequencing",  "#F8CECC", "#B85450"),
+        (5.6, 3.4, "16s rRNA\nQuantification", "#E1D5E7", "#9673A6"),
+        (8.0, 5.0, "Library\nConstruction",    "#F8CECC", "#B85450"),
+        (8.0, 3.4, "Fluorescence\nCycles",     "#E1D5E7", "#9673A6"),
+        (5.6, 1.6, "Bioinformatic\nAnalysis",  "#D5E8D4", "#82B366"),
+    ]
+    for x, y, lbl, fc, ec in boxes:
+        ax.add_patch(mpatches.FancyBboxPatch(
+            (x - 0.95, y - 0.48), 1.9, 0.95,
+            boxstyle="round,pad=0.08", fc=fc, ec=ec, lw=1.2))
+        ax.text(x, y, lbl, ha="center", va="center",
+                fontsize=7.5, fontweight="bold")
+
+    aw = dict(arrowstyle="->", color="#444", lw=1.3)
+    for (x1, y1), (x2, y2) in [
+        ((1.95, 4.8), (2.25, 4.3)),
+        ((1.95, 3.2), (2.25, 3.7)),
+        ((4.15, 4.0), (4.65, 4.7)),
+        ((4.15, 4.0), (4.65, 3.3)),
+        ((6.55, 5.0), (7.05, 5.0)),
+        ((6.55, 3.4), (7.05, 3.4)),
+        ((5.60, 2.92), (5.60, 2.08)),
+    ]:
+        ax.annotate("", xy=(x2, y2), xytext=(x1, y1), arrowprops=aw)
+
+    ax.text(8.4, 2.6, "Negative", ha="center", fontsize=7, color="#9673A6")
+    ax.text(9.4, 2.6, "Positive", ha="center", fontsize=7, color="#B85450")
+    ax.text(5.6, 1.0, "Threshold", ha="center", fontsize=7, color="#555")
+
+    ax.text(0.0, 1.02, "(A)", transform=ax.transAxes,
+            fontsize=11, fontweight="bold", va="bottom")
+
+
+def panel_B(fig, ax_hm, species_df, meta_df):
+    meta_df = meta_df.sort_values(["Type", "Grade"]).reset_index(drop=True)
+    n = len(meta_df)
+
+    species_df.index = species_df.index.astype(str)
+    meta_df["SampleID"] = meta_df["SampleID"].astype(str)
+
+    cols = [s for s in SPECIES_ORDER if s in species_df.columns]
+    if not cols:
+        cols = species_df.columns.tolist()
+
+    mat = species_df.reindex(index=meta_df["SampleID"].tolist(),
+                             columns=cols).values.T.astype(float)
+
+    im = ax_hm.imshow(mat, aspect="auto", cmap=HEATMAP_CMAP,
+                      vmin=0, vmax=80, interpolation="nearest")
+    ax_hm.set_yticks(range(len(cols)))
+    ax_hm.set_yticklabels(cols, fontsize=8, style="italic")
+    ax_hm.set_xticks([])
+    ax_hm.spines["top"].set_visible(False)
+    ax_hm.spines["right"].set_visible(False)
+    ax_hm.spines["bottom"].set_visible(False)
+
+    cbar = fig.colorbar(im, ax=ax_hm, fraction=0.04, pad=0.02, shrink=0.78)
+    cbar.set_label("Relative Abundance(%)", fontsize=8)
+    cbar.ax.tick_params(labelsize=7)
+
+    ax_type  = ax_hm.inset_axes([0, -0.055, 1, 0.030])
+    ax_grade = ax_hm.inset_axes([0, -0.090, 1, 0.030])
+    ax_dct   = ax_hm.inset_axes([0, -0.210, 1, 0.080])
+
+    for axa in [ax_type, ax_grade]:
+        axa.set_xlim(0, 1)
+        axa.set_ylim(0, 1)
+        axa.axis("off")
+
+    for i, row in meta_df.iterrows():
+        ax_type.add_patch(mpatches.Rectangle(
+            (i / n, 0), 1 / n, 1,
+            fc=TYPE_COLORS.get(row["Type"], "#ccc"), ec="none"))
+        ax_grade.add_patch(mpatches.Rectangle(
+            (i / n, 0), 1 / n, 1,
+            fc=GRADE_COLORS.get(int(row["Grade"]), "#fff"), ec="none"))
+
+    ax_type.text(-0.01,  0.5, "Type",     ha="right", va="center",
+                 fontsize=7, transform=ax_type.transAxes)
+    ax_grade.text(-0.01, 0.5, "AH grade", ha="right", va="center",
+                  fontsize=7, transform=ax_grade.transAxes)
+
+    bar_colors = [TYPE_COLORS.get(t, "#ccc") for t in meta_df["Type"]]
+    ax_dct.bar(range(n), meta_df["DeltaCt"].values,
+               color=bar_colors, width=0.9, linewidth=0)
+    ax_dct.set_xlim(-0.5, n - 0.5)
+    ax_dct.set_ylabel("16s ΔCt", fontsize=7)
+    ax_dct.tick_params(labelsize=6)
+    for sp in ["top", "right"]:
+        ax_dct.spines[sp].set_visible(False)
+
+    type_h  = [mpatches.Patch(color=c, label=k) for k, c in TYPE_COLORS.items()]
+    grade_h = [mpatches.Patch(color=GRADE_COLORS[g], label=f"Grade {g}")
+               for g in [2, 3, 4]]
+    ax_hm.legend(handles=type_h + grade_h, fontsize=7, ncol=2,
+                 bbox_to_anchor=(1.26, 1.0), loc="upper left",
+                 framealpha=0.75, title="Annotation", title_fontsize=7.5)
+
+    ax_hm.set_title("(B)", loc="left", fontsize=11, fontweight="bold")
+
+
+def panel_C(ax, roc_dir):
+    ax.plot([0, 1], [0, 1], color="grey", lw=1.0, ls="--")
+
+    for model in ["AS", "AT", "NS"]:
+        path = os.path.join(roc_dir, f"roc_{model}.csv")
+        if not os.path.exists(path):
+            print(f"missing: {path}")
+            continue
+        fpr, tpr, meta = read_roc(path)
+        auc    = meta.get("AUC",    0.0)
+        ci_lo  = meta.get("CI_low", 0.0)
+        ci_hi  = meta.get("CI_high",1.0)
+        color  = ROC_COLORS[model]
+        label  = f"{model} AUC={auc:.3f} ({ci_lo:.3f}−{ci_hi:.3f})"
+        ax.plot(fpr, tpr, color=color, lw=2.2, label=label)
+        ci_w = (ci_hi - ci_lo) * 0.38
+        ax.fill_between(fpr,
+                        np.clip(tpr - ci_w, 0, 1),
+                        np.clip(tpr + ci_w, 0, 1),
+                        color=color, alpha=0.10)
+
+    ax.set_xlim(-0.02, 1.02)
+    ax.set_ylim(-0.02, 1.05)
+    ax.set_xlabel("1−Specificity", fontsize=10)
+    ax.set_ylabel("Sensitivity",   fontsize=10)
+    ax.set_title("ROC curve",      fontsize=10)
+    ax.legend(fontsize=8.5, loc="lower right", framealpha=0.85)
+    for sp in ["top", "right"]:
+        ax.spines[sp].set_visible(False)
+    ax.tick_params(labelsize=8)
+    ax.text(-0.12, 1.04, "(C)", transform=ax.transAxes,
+            fontsize=11, fontweight="bold")
+
+
+def panel_D(ax, shap_df, feat_df):
+    genera = [g for g in SHAP_ORDER if g in shap_df.columns]
+    if not genera:
+        genera = shap_df.abs().mean().sort_values(ascending=False).head(15).index.tolist()
+
+    np.random.seed(42)
+    for i, g in enumerate(genera):
+        sv = shap_df[g].values.astype(float)
+        fv = feat_df[g].values.astype(float) if g in feat_df.columns else np.zeros(len(sv))
+        fv_norm = (fv - fv.min()) / max(fv.max() - fv.min(), 1e-9)
+        jitter = (np.random.rand(len(sv)) - 0.5) * 0.22
+        ax.scatter(sv, i + jitter,
+                   c=SHAP_CMAP(fv_norm), s=16, alpha=0.75,
+                   linewidths=0, zorder=3)
+
+    ax.axvline(0, color="black", lw=0.9)
+    ax.set_yticks(range(len(genera)))
+    ax.set_yticklabels([g.replace("g__", "") for g in genera], fontsize=8.5)
+    ax.set_xlabel("SHAP value", fontsize=10)
+    ax.set_title("Feature contribution from SHAP analysis (AT)", fontsize=9)
+    for sp in ["top", "right"]:
+        ax.spines[sp].set_visible(False)
+    ax.tick_params(axis="x", labelsize=8)
+
+    sm = plt.cm.ScalarMappable(cmap=SHAP_CMAP, norm=plt.Normalize(0, 1))
+    sm.set_array([])
+    cbar = plt.colorbar(sm, ax=ax, fraction=0.04, pad=0.02, shrink=0.45)
+    cbar.set_label("Feature value", fontsize=8)
+    cbar.set_ticks([0, 1])
+    cbar.set_ticklabels(["Low", "High"])
+    cbar.ax.tick_params(labelsize=7)
+
+    ax.text(-0.14, 1.03, "(D)", transform=ax.transAxes,
+            fontsize=11, fontweight="bold")
+
+
+def main(data_dir="data", out_dir="."):
+    species_df = pd.read_csv(os.path.join(data_dir, "heatmap_species.csv"), index_col=0)
+    meta_df    = pd.read_csv(os.path.join(data_dir, "heatmap_metadata.csv"))
+    shap_df    = pd.read_csv(os.path.join(data_dir, "shap_AT.csv"),          index_col=0)
+    feat_df    = pd.read_csv(os.path.join(data_dir, "shap_AT_features.csv"), index_col=0)
+
+    fig = plt.figure(figsize=(20, 24))
+    fig.patch.set_facecolor("white")
+    gs = GridSpec(2, 2, figure=fig, hspace=0.38, wspace=0.34,
+                  height_ratios=[1.0, 1.6])
+
+    panel_A(fig.add_subplot(gs[0, 0]))
+    panel_B(fig, fig.add_subplot(gs[0, 1]), species_df, meta_df)
+    panel_C(fig.add_subplot(gs[1, 0]), data_dir)
+    panel_D(fig.add_subplot(gs[1, 1]), shap_df, feat_df)
+
+    os.makedirs(out_dir, exist_ok=True)
+    for ext in ("pdf", "png"):
+        fig.savefig(os.path.join(out_dir, f"Figure2.{ext}"),
+                    dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    print("done: Figure2.pdf / Figure2.png")
+
+
+if __name__ == "__main__":
+    p = argparse.ArgumentParser()
+    p.add_argument("--data_dir", default="data")
+    p.add_argument("--out_dir",  default=".")
+    args = p.parse_args()
+    main(args.data_dir, args.out_dir)
+
+#Figure
+
+import os
+import argparse
+import numpy as np
+import pandas as pd
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+from matplotlib.gridspec import GridSpec, GridSpecFromSubplotSpec
+from scipy import stats
+from itertools import combinations
+
+TAXA_COLORS = {
+    "g__Streptococcus":   "#E64B35",
+    "g__Staphylococcus":  "#4DBBD5",
+    "g__Corynebacterium": "#00A087",
+    "g__Moraxella":       "#3C5488",
+    "g__Fusobacterium":   "#F39B7F",
+    "g__Neisseria":       "#8491B4",
+    "g__Prevotella":      "#91D1C2",
+    "g__Pseudomonas":     "#DC0000",
+    "g__Ralstonia":       "#7E6148",
+    "g__Porphyromonas":   "#B09C85",
+    "Others":             "#CCCCCC",
+}
+
+GENERA_ORDER = [
+    "g__Acinetobacter", "g__Bacillus", "g__Bifidobacterium",
+    "g__Capnocytophaga", "g__Corynebacterium", "g__Cutibacterium",
+    "g__Faecalibacterium", "g__Haemophilus", "g__Lactobacillus",
+    "g__Leptotrichia", "g__Listeria", "g__Massilia",
+    "g__Moraxella", "g__Neisseria", "g__Parvimonas",
+    "g__Peptococcus", "g__Peptostreptococcus", "g__Porphyromonas",
+    "g__Prevotella", "g__Pseudomonas", "g__Ralstonia",
+    "g__Staphylococcus", "g__Streptococcus", "g__Treponema",
+    "g__Veillonella",
+]
+
+# 显著性星号转换
+def pval_to_stars(p):
+    if p > 0.05:   return "ns"
+    if p > 0.01:   return "*"
+    if p > 0.001:  return "**"
+    if p > 0.0001: return "***"
+    return "****"
+
+
+def add_sig_bracket(ax, x1, x2, y, p_str, h=1.5):
+    ax.plot([x1, x1, x2, x2], [y, y + h, y + h, y], lw=1.0, color="black")
+    ax.text((x1 + x2) / 2, y + h + 0.2, p_str,
+            ha="center", va="bottom", fontsize=7)
+
+
+def read_lda(path):
+    """
+    读取 LEfSe LDA 数据。
+    列: genus, comparison (如 ATH_AT vs ATH_NS), LDA_score, group (ATH/AH)
+    LDA_score: 正值 = 第一个组富集，负值 = 第二个组富集
+    """
+    df = pd.read_csv(path)
+    df.columns = df.columns.str.strip()
+    return df
+
+
+def read_abundance(abund_path, meta_path):
+    abund = pd.read_csv(abund_path, index_col=0)
+    meta  = pd.read_csv(meta_path)
+    abund.index = abund.index.astype(str)
+    meta["SampleID"] = meta["SampleID"].astype(str)
+    return meta.merge(abund, left_on="SampleID", right_index=True, how="inner")
+
+
+def panel_AB_lda(ax, lda_df, comparisons, group_label, dot_color):
+    """
+    面板 A 或 B：LDA 气泡图（横向，三列对应三个比较）。
+    comparisons: list of str，与 lda_df["comparison"] 匹配
+    """
+    n_comp = len(comparisons)
+    # 每个 genus 的相对丰度（用于气泡大小）
+    # 用 lda_df 里的 mean_abund 列，如果没有则统一大小
+    has_abund = "mean_abund" in lda_df.columns
+
+    y_ticks = list(range(len(GENERA_ORDER)))
+    y_map   = {g: i for i, g in enumerate(GENERA_ORDER)}
+
+    for ci, comp in enumerate(comparisons):
+        sub = lda_df[lda_df["comparison"] == comp]
+        for _, row in sub.iterrows():
+            g = row["genus"]
+            if g not in y_map:
+                continue
+            yi   = y_map[g]
+            lda  = row["LDA_score"]
+            size = row["mean_abund"] * 15 if has_abund else 60
+            # 根据 LDA 方向决定 x 偏移列
+            x_base = ci * 14   # 每列宽14单位
+            ax.scatter(x_base + lda, yi,
+                       s=np.clip(size, 10, 300),
+                       c=dot_color,
+                       alpha=0.80, linewidths=0.3,
+                       edgecolors="white", zorder=3)
+
+    # 竖线（每列中线）
+    for ci in range(n_comp):
+        ax.axvline(ci * 14, color="grey", lw=0.5, ls="--", zorder=1)
+
+    # y 轴
+    ax.set_yticks(y_ticks)
+    ax.set_yticklabels([g.replace("g__", "") for g in GENERA_ORDER],
+                       fontsize=7.5)
+    ax.set_ylim(-0.8, len(GENERA_ORDER) - 0.2)
+
+    # x 轴：每列对应一个比较，标在顶部
+    col_centers = [ci * 14 for ci in range(n_comp)]
+    ax2 = ax.twiny()
+    ax2.set_xlim(ax.get_xlim())
+    ax2.set_xticks(col_centers)
+    ax2.set_xticklabels(comparisons, fontsize=7, rotation=15, ha="left")
+    ax2.spines["top"].set_visible(True)
+    ax2.tick_params(top=True)
+
+    ax.set_xlabel("LDA SCORE (log 10)", fontsize=8)
+    for sp in ["top", "right"]:
+        ax.spines[sp].set_visible(False)
+
+    ax.text(-0.12, 1.04, group_label, transform=ax.transAxes,
+            fontsize=11, fontweight="bold")
+
+
+def panel_stacked_bar(ax, df, group, sample_types, panel_label):
+    """
+    面板 C 或 D：堆积柱状图（对应四个 sample_types）。
+    """
+    taxa_order = list(TAXA_COLORS.keys())
+    genus_cols = [c for c in df.columns if c.startswith("g__")]
+
+    x_pos, means = [], {}
+    for i, st in enumerate(sample_types):
+        key = f"{group}_{st}"
+        sub = df[df["Group"] == group] if "SampleType" not in df.columns \
+              else df[(df["Group"] == group) & (df["SampleType"] == st)]
+        if sub.empty:
+            continue
+        v = sub[genus_cols].mean()
+        total = v.sum()
+        v = v / total * 100 if total > 0 else v
+        means[key] = v
+        x_pos.append((key, i))
+
+    if not x_pos:
+        ax.axis("off")
+        return
+
+    bottoms = np.zeros(len(x_pos))
+    xvals   = [p[1] for p in x_pos]
+    xlabels = [p[0] for p in x_pos]
+
+    for taxon in taxa_order:
+        if taxon == "Others":
+            continue
+        heights = [means[k].get(taxon, 0) for k, _ in x_pos]
+        ax.bar(xvals, heights, bottom=bottoms, width=0.65,
+               color=TAXA_COLORS[taxon], edgecolor="none")
+        bottoms += np.array(heights)
+
+    other_h = np.zeros(len(x_pos))
+    for i, (k, _) in enumerate(x_pos):
+        for c in genus_cols:
+            if c not in TAXA_COLORS:
+                other_h[i] += means[k].get(c, 0)
+    if other_h.sum() > 0:
+        ax.bar(xvals, other_h, bottom=bottoms, width=0.65,
+               color=TAXA_COLORS["Others"], edgecolor="none")
+
+    ax.set_xticks(xvals)
+    ax.set_xticklabels(xlabels, rotation=30, ha="right", fontsize=8)
+    ax.set_ylim(0, 110)
+    ax.set_ylabel("Relative Abundance(%)", fontsize=9)
+    for sp in ["top", "right"]:
+        ax.spines[sp].set_visible(False)
+    ax.set_title(panel_label, loc="left", fontsize=11, fontweight="bold")
+
+
+def panel_boxplot_compare(ax, df, group_col, sample_type_col,
+                          genus, group, sample_types,
+                          panel_label):
+    """
+    面板 E–I：箱线图 + 显著性括号。
+    比较同一 group 内不同 sample_types 之间的该 genus 丰度。
+    显著性对：所有两两配对（6对）。
+    """
+    if genus not in df.columns:
+        ax.axis("off")
+        ax.text(0.5, 0.5, f"{genus} not found", ha="center", va="center")
+        return
+
+    data_by_st = {}
+    for st in sample_types:
+        sub = df[(df[group_col] == group) & (df[sample_type_col] == st)]
+        data_by_st[st] = sub[genus].dropna().values
+
+    xvals  = list(range(len(sample_types)))
+    xlabels = [f"{group}_{st}" for st in sample_types]
+
+    bp = ax.boxplot([data_by_st[st] for st in sample_types],
+                    positions=xvals, widths=0.5,
+                    patch_artist=True,
+                    medianprops=dict(color="black", lw=1.5),
+                    whiskerprops=dict(lw=0.8),
+                    capprops=dict(lw=0.8),
+                    flierprops=dict(marker="o", markersize=3,
+                                    markerfacecolor="grey",
+                                    markeredgecolor="none", alpha=0.5),
+                    zorder=2)
+
+    colors = ["#4472C4", "#ED7D31", "#7030A0", "#70AD47"]
+    for patch, color in zip(bp["boxes"], colors[:len(sample_types)]):
+        patch.set_facecolor(color)
+        patch.set_alpha(0.65)
+
+    # 散点 jitter
+    np.random.seed(42)
+    for xi, st in enumerate(sample_types):
+        vals = data_by_st[st]
+        jitter = (np.random.rand(len(vals)) - 0.5) * 0.25
+        ax.scatter(xi + jitter, vals, s=12, alpha=0.6,
+                   color=colors[xi % len(colors)],
+                   linewidths=0, zorder=3)
+
+    # 两两显著性
+    pairs = list(combinations(range(len(sample_types)), 2))
+    y_max = max(v.max() if len(v) > 0 else 0
+                for v in data_by_st.values())
+    y_step = y_max * 0.12 + 3
+
+    for i, (xi, xj) in enumerate(pairs):
+        a = data_by_st[sample_types[xi]]
+        b = data_by_st[sample_types[xj]]
+        if len(a) < 2 or len(b) < 2:
+            continue
+        _, pval = stats.mannwhitneyu(a, b, alternative="two-sided")
+        stars = pval_to_stars(pval)
+        y_bracket = y_max + y_step * (i + 1)
+        add_sig_bracket(ax, xi, xj, y_bracket, stars, h=y_step * 0.3)
+
+    ax.set_xticks(xvals)
+    ax.set_xticklabels(xlabels, rotation=30, ha="right", fontsize=8)
+    ax.set_ylabel("Relative Abundance(%)", fontsize=9)
+    ax.set_ylim(0)
+    for sp in ["top", "right"]:
+        ax.spines[sp].set_visible(False)
+    ax.set_title(f"{panel_label}  {genus.replace('g__', '')}",
+                 loc="left", fontsize=10, fontweight="bold")
+
+
+def panel_boxplot_twogroup(ax, df, group_col, sample_type_col,
+                            genus, st, panel_label):
+    """
+    ATH_AT vs AH_AT（或其他两组比较）的箱线图。
+    """
+    if genus not in df.columns:
+        ax.axis("off")
+        return
+
+    groups  = ["ATH", "AH"]
+    colors  = ["#E64B35", "#4DBBD5"]
+    xlabels = [f"{g}_{st}" for g in groups]
+
+    data = []
+    for g in groups:
+        sub = df[(df[group_col] == g) & (df[sample_type_col] == st)]
+        data.append(sub[genus].dropna().values)
+
+    bp = ax.boxplot(data, positions=[0, 1], widths=0.5,
+                    patch_artist=True,
+                    medianprops=dict(color="black", lw=1.5),
+                    whiskerprops=dict(lw=0.8),
+                    capprops=dict(lw=0.8),
+                    flierprops=dict(marker="o", markersize=3,
+                                    markerfacecolor="grey",
+                                    markeredgecolor="none", alpha=0.5))
+    for patch, color in zip(bp["boxes"], colors):
+        patch.set_facecolor(color)
+        patch.set_alpha(0.65)
+
+    np.random.seed(0)
+    for xi, (vals, color) in enumerate(zip(data, colors)):
+        jitter = (np.random.rand(len(vals)) - 0.5) * 0.25
+        ax.scatter(xi + jitter, vals, s=12, alpha=0.6,
+                   color=color, linewidths=0, zorder=3)
+
+    if len(data[0]) >= 2 and len(data[1]) >= 2:
+        _, pval = stats.mannwhitneyu(data[0], data[1], alternative="two-sided")
+        stars = pval_to_stars(pval)
+        y_max = max(v.max() if len(v) > 0 else 0 for v in data)
+        add_sig_bracket(ax, 0, 1, y_max * 1.05, stars, h=y_max * 0.08)
+
+    ax.set_xticks([0, 1])
+    ax.set_xticklabels(xlabels, rotation=20, ha="right", fontsize=8.5)
+    ax.set_ylabel("Relative Abundance(%)", fontsize=9)
+    ax.set_ylim(0)
+    for sp in ["top", "right"]:
+        ax.spines[sp].set_visible(False)
+    ax.set_title(f"{panel_label}  {genus.replace('g__', '')}",
+                 loc="left", fontsize=10, fontweight="bold")
+
+
+def main(data_dir="data", out_dir="."):
+    lda_path   = os.path.join(data_dir, "figS3_lda.csv")
+    abund_path = os.path.join(data_dir, "genus_abundance.csv")
+    meta_path  = os.path.join(data_dir, "metadata.csv")
+
+    lda_df = read_lda(lda_path)
+    df     = read_abundance(abund_path, meta_path)
+
+    # 确保列名规范
+    df.columns = df.columns.str.strip()
+
+    fig = plt.figure(figsize=(22, 28))
+    fig.patch.set_facecolor("white")
+
+    # 布局：上两行是LDA图（A/B），中间一行是堆积图（C/D），下面箱线图（E-I）
+    outer = GridSpec(4, 1, figure=fig,
+                     height_ratios=[2.0, 2.0, 1.2, 1.4],
+                     hspace=0.45)
+
+    # ── (A) ATH LDA ───────────────────────────────────────────────────────────
+    ax_A = fig.add_subplot(outer[0])
+    panel_AB_lda(ax_A, lda_df,
+                 comparisons=["ATH_AT vs ATH_NS",
+                               "ATH_AT vs ATH_AS",
+                               "ATH_AT vs ATH_TS"],
+                 group_label="(A)  ATH",
+                 dot_color="#E64B35")
+
+    # ── (B) AH LDA ────────────────────────────────────────────────────────────
+    ax_B = fig.add_subplot(outer[1])
+    panel_AB_lda(ax_B, lda_df,
+                 comparisons=["AH_AT vs AH_NS",
+                               "AH_AT vs AH_AS",
+                               "AH_AT vs AH_TS"],
+                 group_label="(B)  AH",
+                 dot_color="#4DBBD5")
+
+    # ── (C)(D) 堆积柱状图 ──────────────────────────────────────────────────────
+    row_cd = GridSpecFromSubplotSpec(1, 2, subplot_spec=outer[2], wspace=0.35)
+    panel_stacked_bar(fig.add_subplot(row_cd[0]), df,
+                      "ATH", ["NS", "AS", "TS", "AT"], "(C)")
+    panel_stacked_bar(fig.add_subplot(row_cd[1]), df,
+                      "AH",  ["NS", "AS", "TS", "AT"], "(D)")
+
+    # ── (E)(F)(G)(H)(I) 箱线图 ────────────────────────────────────────────────
+    row_ei = GridSpecFromSubplotSpec(1, 5, subplot_spec=outer[3], wspace=0.45)
+
+    # E: ATH_AT vs AH_AT - Streptococcus
+    panel_boxplot_twogroup(fig.add_subplot(row_ei[0]),
+                            df, "Group", "SampleType",
+                            "g__Streptococcus", "AT", "(E)")
+
+    # F: ATH_AT vs AH_AT - Staphylococcus
+    panel_boxplot_twogroup(fig.add_subplot(row_ei[1]),
+                            df, "Group", "SampleType",
+                            "g__Staphylococcus", "AT", "(F)")
+
+    # G: ATH 四个样本类型 - Streptococcus
+    panel_boxplot_compare(fig.add_subplot(row_ei[2]),
+                           df, "Group", "SampleType",
+                           "g__Streptococcus", "ATH",
+                           ["NS", "AS", "TS", "AT"], "(G)")
+
+    # H: ATH 四个样本类型 - Staphylococcus
+    panel_boxplot_compare(fig.add_subplot(row_ei[3]),
+                           df, "Group", "SampleType",
+                           "g__Staphylococcus", "ATH",
+                           ["NS", "AS", "TS", "AT"], "(H)")
+
+    # I: AH 四个样本类型 - Staphylococcus
+    panel_boxplot_compare(fig.add_subplot(row_ei[4]),
+                           df, "Group", "SampleType",
+                           "g__Staphylococcus", "AH",
+                           ["NS", "AS", "TS", "AT"], "(I)")
+
+    os.makedirs(out_dir, exist_ok=True)
+    for ext in ("pdf", "png"):
+        fig.savefig(os.path.join(out_dir, f"FigureS3.{ext}"),
+                    dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    print("done: FigureS3.pdf / FigureS3.png")
+
+
+if __name__ == "__main__":
+    p = argparse.ArgumentParser()
+    p.add_argument("--data_dir", default="data")
+    p.add_argument("--out_dir",  default=".")
+    args = p.parse_args()
+    main(args.data_dir, args.out_dir)
